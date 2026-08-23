@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Menu, Plus, MessageCircle, Settings, HelpCircle } from "lucide-react";
+import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown } from "lucide-react";
+import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../lib/models";
 
 interface Message {
   role: "user" | "assistant";
@@ -19,6 +20,7 @@ export default function Chat() {
   const [currentConvId, setCurrentConvId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState(DEFAULT_GEMINI_MODEL);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -67,6 +69,7 @@ export default function Chat() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [...messages, userMessage],
+          model,
         }),
       });
 
@@ -186,6 +189,24 @@ export default function Chat() {
                 <Menu size={20} className="text-gray-700" />
               </button>
               <h1 className="text-2xl font-semibold text-gray-900">My Gemini App</h1>
+              <div className="relative">
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  aria-label="Select Gemini model"
+                  className="appearance-none pl-3 pr-8 py-1.5 rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors cursor-pointer"
+                >
+                  {GEMINI_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={14}
+                  className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500"
+                />
+              </div>
             </div>
           </div>
         </div>
