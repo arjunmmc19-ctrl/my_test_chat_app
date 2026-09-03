@@ -86,9 +86,13 @@ export default function Chat() {
         }),
       });
 
-      if (!response.ok) throw new Error("Failed to fetch response");
+      const data = await response.json().catch(() => null);
 
-      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Failed to generate response. Please try again."
+        );
+      }
       const assistantMessage: Message = {
         role: "assistant",
         content: data.text,
@@ -111,7 +115,15 @@ export default function Chat() {
         );
       }
     } catch (error) {
-      console.error("Error:", error);
+      // Expected, already-handled failure (network hiccup or a Gemini API
+      // error surfaced by the backend) — logged at warn level so it doesn't
+      // trip Next.js's dev-mode error overlay for a case the UI already
+      // recovers from gracefully.
+      console.warn("Chat request failed:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Sorry, I encountered an error. Please try again.";
       setConversations((prev) =>
         prev.map((c) =>
           c.id === convId
@@ -121,7 +133,7 @@ export default function Chat() {
                   ...c.messages,
                   {
                     role: "assistant",
-                    content: "Sorry, I encountered an error. Please try again.",
+                    content: message,
                   },
                 ],
               }

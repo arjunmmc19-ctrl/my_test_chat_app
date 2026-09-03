@@ -134,8 +134,25 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Chat API error:", error);
+
+    if (error instanceof ApiError) {
+      const friendlyMessages: Record<number, string> = {
+        429: "This model has hit its rate limit or daily quota. Please wait a moment and try again, or switch models.",
+        503: "This model is temporarily overloaded. Please try again in a few seconds.",
+        400: "The model rejected the request. Try adjusting your settings and sending again.",
+      };
+      return NextResponse.json(
+        {
+          error:
+            friendlyMessages[error.status] ||
+            "Failed to generate response. Please try again.",
+        },
+        { status: error.status }
+      );
+    }
+
     return NextResponse.json(
-      { error: "Failed to generate response" },
+      { error: "Failed to generate response. Please try again." },
       { status: 500 }
     );
   }
