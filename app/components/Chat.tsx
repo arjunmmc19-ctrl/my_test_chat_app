@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle, Info } from "lucide-react";
 import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../lib/models";
 import {
   GenerationSettings,
@@ -356,8 +357,77 @@ export default function Chat() {
   );
 }
 
+const TOOLTIP_WIDTH = 224; // px, matches w-56
+
+function InfoTooltip({ text }: { text: string }) {
+  const iconRef = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; above: boolean } | null>(null);
+
+  // Rendered into document.body so it always sits above the settings
+  // panel's overflow-y-auto clipping box, instead of getting cut off
+  // for fields near the top/bottom of the scrollable list.
+  const show = () => {
+    const rect = iconRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const estimatedHeight = 90;
+    const above = rect.bottom + 8 + estimatedHeight > window.innerHeight;
+    const left = Math.min(
+      Math.max(rect.left + rect.width / 2, TOOLTIP_WIDTH / 2 + 8),
+      window.innerWidth - TOOLTIP_WIDTH / 2 - 8
+    );
+    setPos({
+      top: above ? rect.top - 8 : rect.bottom + 8,
+      left,
+      above,
+    });
+  };
+  const hide = () => setPos(null);
+
+  return (
+    <span
+      ref={iconRef}
+      className="relative inline-flex items-center"
+      onMouseEnter={show}
+      onMouseLeave={hide}
+    >
+      <Info
+        size={13}
+        className="text-gray-400 hover:text-gray-600 cursor-help"
+        aria-hidden="true"
+      />
+      {pos &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            role="tooltip"
+            style={{
+              position: "fixed",
+              top: pos.top,
+              left: pos.left,
+              transform: `translate(-50%, ${pos.above ? "-100%" : "0"})`,
+            }}
+            className="pointer-events-none z-[100] w-56 rounded-lg bg-gray-900 px-3 py-2 text-xs leading-snug text-white shadow-lg"
+          >
+            {text}
+          </div>,
+          document.body
+        )}
+    </span>
+  );
+}
+
+function FieldLabel({ label, tooltip }: { label: string; tooltip: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="text-sm font-medium text-gray-800">{label}</span>
+      <InfoTooltip text={tooltip} />
+    </span>
+  );
+}
+
 function NumberField({
   label,
+  tooltip,
   hint,
   value,
   onChange,
@@ -366,6 +436,7 @@ function NumberField({
   step,
 }: {
   label: string;
+  tooltip: string;
   hint: string;
   value: number | undefined;
   onChange: (value: number | undefined) => void;
@@ -376,7 +447,7 @@ function NumberField({
   return (
     <label className="block">
       <div className="flex items-baseline justify-between mb-1">
-        <span className="text-sm font-medium text-gray-800">{label}</span>
+        <FieldLabel label={label} tooltip={tooltip} />
         <span className="text-xs text-gray-400">{hint}</span>
       </div>
       <input
@@ -397,6 +468,7 @@ function NumberField({
 
 function SliderField({
   label,
+  tooltip,
   value,
   defaultValue,
   onChange,
@@ -405,6 +477,7 @@ function SliderField({
   step,
 }: {
   label: string;
+  tooltip: string;
   value: number;
   defaultValue: number;
   onChange: (value: number) => void;
@@ -415,7 +488,7 @@ function SliderField({
   return (
     <label className="block">
       <div className="flex items-baseline justify-between mb-1">
-        <span className="text-sm font-medium text-gray-800">{label}</span>
+        <FieldLabel label={label} tooltip={tooltip} />
         <span className="text-xs text-gray-500 tabular-nums">{value}</span>
       </div>
       <input
@@ -467,6 +540,7 @@ function SettingsPanel({
         <div className="px-5 py-5 space-y-5">
           <SliderField
             label="Temperature"
+            tooltip="Controls randomness. Lower values give more focused, predictable answers; higher values give more creative, varied answers."
             value={settings.temperature ?? DEFAULT_GENERATION_SETTINGS.temperature!}
             defaultValue={DEFAULT_GENERATION_SETTINGS.temperature!}
             min={0}
@@ -477,6 +551,7 @@ function SettingsPanel({
 
           <NumberField
             label="Top K"
+            tooltip="Limits the model to picking its next word from only the K most likely options. Lower values keep answers more focused."
             hint="min 1"
             value={settings.topK}
             min={1}
@@ -486,6 +561,7 @@ function SettingsPanel({
 
           <NumberField
             label="Top P"
+            tooltip="Limits word choices to the smallest group whose combined likelihood reaches this value. Lower values are more focused, higher values more varied."
             hint="0 to 1"
             value={settings.topP}
             min={0}
@@ -496,6 +572,7 @@ function SettingsPanel({
 
           <NumberField
             label="Output Tokens"
+            tooltip="The maximum length of the reply, in tokens (roughly 4 characters each). Lower values give shorter responses."
             hint="positive integer"
             value={settings.maxOutputTokens}
             min={1}
@@ -505,6 +582,7 @@ function SettingsPanel({
 
           <SliderField
             label="Frequency Penalty"
+            tooltip="Discourages the model from repeating the same words. Higher values reduce repetition."
             value={settings.frequencyPenalty ?? DEFAULT_GENERATION_SETTINGS.frequencyPenalty!}
             defaultValue={DEFAULT_GENERATION_SETTINGS.frequencyPenalty!}
             min={-2}
@@ -515,6 +593,7 @@ function SettingsPanel({
 
           <SliderField
             label="Presence Penalty"
+            tooltip="Encourages the model to bring up new topics instead of repeating what it already said. Higher values push more toward new ideas."
             value={settings.presencePenalty ?? DEFAULT_GENERATION_SETTINGS.presencePenalty!}
             defaultValue={DEFAULT_GENERATION_SETTINGS.presencePenalty!}
             min={-2}
@@ -525,7 +604,10 @@ function SettingsPanel({
 
           <label className="block">
             <div className="flex items-baseline justify-between mb-1">
-              <span className="text-sm font-medium text-gray-800">Stop Sequence</span>
+              <FieldLabel
+                label="Stop Sequence"
+                tooltip="A word or character that tells the model to stop generating as soon as it appears in the output."
+              />
               <span className="text-xs text-gray-400">word or character</span>
             </div>
             <input
@@ -541,6 +623,7 @@ function SettingsPanel({
 
           <NumberField
             label="Seed"
+            tooltip="A fixed number that makes replies more reproducible — the same seed and prompt tend to produce similar results."
             hint="integer"
             value={settings.seed}
             step={1}
