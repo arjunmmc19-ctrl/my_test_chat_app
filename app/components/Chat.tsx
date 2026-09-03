@@ -1,8 +1,13 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown } from "lucide-react";
+import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle } from "lucide-react";
 import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../lib/models";
+import {
+  GenerationSettings,
+  DEFAULT_GENERATION_SETTINGS,
+  sanitizeGenerationSettings,
+} from "../lib/generationSettings";
 
 interface Message {
   role: "user" | "assistant";
@@ -22,6 +27,9 @@ export default function Chat() {
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState(DEFAULT_GEMINI_MODEL);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<GenerationSettings>(DEFAULT_GENERATION_SETTINGS);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv = conversations.find((c) => c.id === currentConvId);
@@ -62,14 +70,19 @@ export default function Chat() {
 
     setInput("");
     setLoading(true);
+    setWarnings([]);
 
     try {
+      const { settings: sanitizedSettings, warnings: clientWarnings } =
+        sanitizeGenerationSettings(settings);
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [...messages, userMessage],
           model,
+          settings: sanitizedSettings,
         }),
       });
 
@@ -80,6 +93,8 @@ export default function Chat() {
         role: "assistant",
         content: data.text,
       };
+
+      setWarnings([...clientWarnings, ...(data.warnings || [])]);
 
       setConversations((prev) =>
         prev.map((c) =>
@@ -169,7 +184,10 @@ export default function Chat() {
             <HelpCircle size={18} />
             Help & FAQ
           </button>
-          <button className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 text-gray-600 text-sm transition-colors">
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-100 text-gray-600 text-sm transition-colors"
+          >
             <Settings size={18} />
             Settings
           </button>
@@ -284,6 +302,16 @@ export default function Chat() {
         {/* Input */}
         <div className="bg-white bg-opacity-80 backdrop-blur-sm border-t border-gray-200 py-4">
           <div className="max-w-4xl mx-auto px-4">
+            {warnings.length > 0 && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                <div className="space-y-0.5">
+                  {warnings.map((w, i) => (
+                    <p key={i}>{w}</p>
+                  ))}
+                </div>
+              </div>
+            )}
             <form onSubmit={handleSubmit} className="flex gap-3">
               <input
                 type="text"
@@ -302,6 +330,226 @@ export default function Chat() {
               </button>
             </form>
           </div>
+        </div>
+      </div>
+
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          onChange={setSettings}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function NumberField({
+  label,
+  hint,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+}: {
+  label: string;
+  hint: string;
+  value: number | undefined;
+  onChange: (value: number | undefined) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  return (
+    <label className="block">
+      <div className="flex items-baseline justify-between mb-1">
+        <span className="text-sm font-medium text-gray-800">{label}</span>
+        <span className="text-xs text-gray-400">{hint}</span>
+      </div>
+      <input
+        type="number"
+        value={value ?? ""}
+        min={min}
+        max={max}
+        step={step}
+        placeholder="Model default"
+        onChange={(e) =>
+          onChange(e.target.value === "" ? undefined : Number(e.target.value))
+        }
+        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      />
+    </label>
+  );
+}
+
+function SliderField({
+  label,
+  value,
+  defaultValue,
+  onChange,
+  min,
+  max,
+  step,
+}: {
+  label: string;
+  value: number;
+  defaultValue: number;
+  onChange: (value: number) => void;
+  min: number;
+  max: number;
+  step: number;
+}) {
+  return (
+    <label className="block">
+      <div className="flex items-baseline justify-between mb-1">
+        <span className="text-sm font-medium text-gray-800">{label}</span>
+        <span className="text-xs text-gray-500 tabular-nums">{value}</span>
+      </div>
+      <input
+        type="range"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-blue-600"
+      />
+      <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
+        <span>{min}</span>
+        <span>default {defaultValue}</span>
+        <span>{max}</span>
+      </div>
+    </label>
+  );
+}
+
+function SettingsPanel({
+  settings,
+  onChange,
+  onClose,
+}: {
+  settings: GenerationSettings;
+  onChange: (settings: GenerationSettings) => void;
+  onClose: () => void;
+}) {
+  const set = <K extends keyof GenerationSettings>(
+    key: K,
+    value: GenerationSettings[K]
+  ) => onChange({ ...settings, [key]: value });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
+      <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl bg-white border border-gray-200 shadow-xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">Model settings</h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors"
+            aria-label="Close settings"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 py-5 space-y-5">
+          <SliderField
+            label="Temperature"
+            value={settings.temperature ?? DEFAULT_GENERATION_SETTINGS.temperature!}
+            defaultValue={DEFAULT_GENERATION_SETTINGS.temperature!}
+            min={0}
+            max={2}
+            step={0.1}
+            onChange={(v) => set("temperature", v)}
+          />
+
+          <NumberField
+            label="Top K"
+            hint="min 1"
+            value={settings.topK}
+            min={1}
+            step={1}
+            onChange={(v) => set("topK", v)}
+          />
+
+          <NumberField
+            label="Top P"
+            hint="0 to 1"
+            value={settings.topP}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(v) => set("topP", v)}
+          />
+
+          <NumberField
+            label="Output Tokens"
+            hint="positive integer"
+            value={settings.maxOutputTokens}
+            min={1}
+            step={1}
+            onChange={(v) => set("maxOutputTokens", v)}
+          />
+
+          <SliderField
+            label="Frequency Penalty"
+            value={settings.frequencyPenalty ?? DEFAULT_GENERATION_SETTINGS.frequencyPenalty!}
+            defaultValue={DEFAULT_GENERATION_SETTINGS.frequencyPenalty!}
+            min={-2}
+            max={2}
+            step={0.1}
+            onChange={(v) => set("frequencyPenalty", v)}
+          />
+
+          <SliderField
+            label="Presence Penalty"
+            value={settings.presencePenalty ?? DEFAULT_GENERATION_SETTINGS.presencePenalty!}
+            defaultValue={DEFAULT_GENERATION_SETTINGS.presencePenalty!}
+            min={-2}
+            max={2}
+            step={0.1}
+            onChange={(v) => set("presencePenalty", v)}
+          />
+
+          <label className="block">
+            <div className="flex items-baseline justify-between mb-1">
+              <span className="text-sm font-medium text-gray-800">Stop Sequence</span>
+              <span className="text-xs text-gray-400">word or character</span>
+            </div>
+            <input
+              type="text"
+              value={settings.stopSequence ?? ""}
+              placeholder="e.g. ### or STOP"
+              onChange={(e) =>
+                set("stopSequence", e.target.value === "" ? undefined : e.target.value)
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </label>
+
+          <NumberField
+            label="Seed"
+            hint="integer"
+            value={settings.seed}
+            step={1}
+            onChange={(v) => set("seed", v)}
+          />
+        </div>
+
+        <div className="flex items-center justify-between px-5 py-4 border-t border-gray-200">
+          <button
+            onClick={() => onChange(DEFAULT_GENERATION_SETTINGS)}
+            className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+          >
+            <RotateCcw size={14} />
+            Reset to defaults
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors font-medium text-sm"
+          >
+            Done
+          </button>
         </div>
       </div>
     </div>
