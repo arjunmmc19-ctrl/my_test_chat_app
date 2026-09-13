@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle, Info } from "lucide-react";
+import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle, Info, Copy, Check, ThumbsUp, ThumbsDown } from "lucide-react";
 import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../lib/models";
 import {
   GenerationSettings,
@@ -11,9 +11,16 @@ import {
 } from "../lib/generationSettings";
 
 interface Message {
+  id: string;
   role: "user" | "assistant";
   content: string;
+  reaction?: "up" | "down";
 }
+
+const generateId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 interface Conversation {
   id: string;
@@ -31,6 +38,11 @@ export default function Chat() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<GenerationSettings>(DEFAULT_GENERATION_SETTINGS);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [feedbackOpenId, setFeedbackOpenId] = useState<string | null>(null);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackStatus, setFeedbackStatus] = useState<Record<string, "sent" | "error">>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentConv = conversations.find((c) => c.id === currentConvId);
@@ -43,6 +55,11 @@ export default function Chat() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    setFeedbackOpenId(null);
+    setFeedbackText("");
+  }, [currentConvId]);
 
   const startNewChat = () => {
     const newId = Date.now().toString();
@@ -59,7 +76,7 @@ export default function Chat() {
     }
 
     const convId = currentConvId || Date.now().toString();
-    const userMessage: Message = { role: "user", content: input };
+    const userMessage: Message = { id: generateId(), role: "user", content: input };
 
     setConversations((prev) =>
       prev.map((c) =>
@@ -95,6 +112,7 @@ export default function Chat() {
         );
       }
       const assistantMessage: Message = {
+        id: generateId(),
         role: "assistant",
         content: data.text,
       };
@@ -133,6 +151,7 @@ export default function Chat() {
                 messages: [
                   ...c.messages,
                   {
+                    id: generateId(),
                     role: "assistant",
                     content: message,
                   },
@@ -143,6 +162,75 @@ export default function Chat() {
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCopy = async (msg: Message) => {
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      setCopiedId(msg.id);
+      setTimeout(() => {
+        setCopiedId((id) => (id === msg.id ? null : id));
+      }, 1500);
+    } catch (error) {
+      console.warn("Copy to clipboard failed:", error);
+    }
+  };
+
+  const toggleReaction = (messageId: string, reaction: "up" | "down") => {
+    if (!currentConvId) return;
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === currentConvId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId
+                  ? { ...m, reaction: m.reaction === reaction ? undefined : reaction }
+                  : m
+              ),
+            }
+          : c
+      )
+    );
+  };
+
+  const openFeedback = (messageId: string) => {
+    setFeedbackOpenId(messageId);
+    setFeedbackText("");
+  };
+
+  const cancelFeedback = () => {
+    setFeedbackOpenId(null);
+    setFeedbackText("");
+  };
+
+  const submitFeedback = async (msg: Message) => {
+    const trimmed = feedbackText.trim();
+    if (!trimmed) return;
+
+    setFeedbackSubmitting(true);
+    try {
+      const response = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          response: msg.content,
+          reaction: msg.reaction ?? "",
+          feedback: trimmed,
+        }),
+      });
+
+      if (!response.ok) throw new Error("Failed to save feedback");
+
+      setFeedbackStatus((prev) => ({ ...prev, [msg.id]: "sent" }));
+      setFeedbackOpenId(null);
+      setFeedbackText("");
+    } catch (error) {
+      console.warn("Feedback submit failed:", error);
+      setFeedbackStatus((prev) => ({ ...prev, [msg.id]: "error" }));
+    } finally {
+      setFeedbackSubmitting(false);
     }
   };
 
@@ -264,9 +352,9 @@ export default function Chat() {
               </div>
             )}
 
-            {messages.map((msg, idx) => (
+            {messages.map((msg) => (
               <div
-                key={idx}
+                key={msg.id}
                 className={`flex gap-4 py-6 animate-in fade-in ${
                   msg.role === "user" ? "justify-end" : "justify-start"
                 }`}
@@ -286,6 +374,100 @@ export default function Chat() {
                   <p className="text-gray-900 leading-relaxed whitespace-pre-wrap">
                     {msg.content}
                   </p>
+
+                  {msg.role === "assistant" && (
+                    <div className="mt-2 flex items-center gap-1">
+                      <button
+                        onClick={() => handleCopy(msg)}
+                        className="p-1.5 rounded-md hover:bg-gray-100 text-gray-500 hover:text-gray-700 transition-colors"
+                        aria-label="Copy response"
+                        title="Copy"
+                      >
+                        {copiedId === msg.id ? (
+                          <Check size={14} className="text-green-600" />
+                        ) : (
+                          <Copy size={14} />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => toggleReaction(msg.id, "up")}
+                        className={`p-1.5 rounded-md hover:bg-gray-100 transition-colors ${
+                          msg.reaction === "up"
+                            ? "text-blue-600 bg-blue-50"
+                            : "text-gray-500 hover:text-gray-700"
+                        }`}
+                        aria-label="Thumbs up"
+                        aria-pressed={msg.reaction === "up"}
+                        title="Good response"
+                      >
+                        <ThumbsUp size={14} />
+                      </button>
+                      <button
+                        onClick={() => toggleReaction(msg.id, "down")}
+                        className={`p-1.5 rounded-md hover:bg-gray-100 transition-colors ${
+                          msg.reaction === "down"
+                            ? "text-blue-600 bg-blue-50"
+                            : "text-gray-500 hover:text-gray-700"
+                        }`}
+                        aria-label="Thumbs down"
+                        aria-pressed={msg.reaction === "down"}
+                        title="Bad response"
+                      >
+                        <ThumbsDown size={14} />
+                      </button>
+                      <button
+                        onClick={() =>
+                          feedbackOpenId === msg.id ? cancelFeedback() : openFeedback(msg.id)
+                        }
+                        className={`px-2 py-1 rounded-md hover:bg-gray-100 text-xs font-medium transition-colors ${
+                          feedbackOpenId === msg.id
+                            ? "text-blue-600 bg-blue-50"
+                            : "text-gray-500 hover:text-gray-700"
+                        }`}
+                      >
+                        Feedback
+                      </button>
+                      {copiedId === msg.id && (
+                        <span className="text-xs text-green-600">Copied</span>
+                      )}
+                      {feedbackStatus[msg.id] === "sent" && feedbackOpenId !== msg.id && (
+                        <span className="text-xs text-gray-400">Feedback sent</span>
+                      )}
+                    </div>
+                  )}
+
+                  {msg.role === "assistant" && feedbackOpenId === msg.id && (
+                    <div className="mt-2 w-full text-left rounded-lg border border-gray-200 bg-gray-50 p-3">
+                      <textarea
+                        value={feedbackText}
+                        onChange={(e) => setFeedbackText(e.target.value)}
+                        placeholder="What went wrong or right about this response?"
+                        rows={3}
+                        autoFocus
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none bg-white"
+                      />
+                      <div className="mt-2 flex items-center justify-end gap-2">
+                        <button
+                          onClick={cancelFeedback}
+                          className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => submitFeedback(msg)}
+                          disabled={!feedbackText.trim() || feedbackSubmitting}
+                          className="px-3 py-1.5 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors text-xs font-medium"
+                        >
+                          {feedbackSubmitting ? "Sending..." : "Submit"}
+                        </button>
+                      </div>
+                      {feedbackStatus[msg.id] === "error" && (
+                        <p className="mt-1.5 text-xs text-red-600">
+                          Couldn&apos;t save feedback. Please try again.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {msg.role === "user" && (
                   <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-green-400 to-green-600 flex items-center justify-center text-white font-semibold text-lg">
