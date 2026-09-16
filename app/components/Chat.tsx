@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle, Info, Copy, Check, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle, Info, Copy, Check, ThumbsUp, ThumbsDown, Paperclip, FileText, Loader2 } from "lucide-react";
 import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../lib/models";
 import {
   GenerationSettings,
@@ -15,6 +15,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   reaction?: "up" | "down";
+  sources?: { pageNumber: number | null; source: string | null }[];
 }
 
 const generateId = () =>
@@ -26,6 +27,8 @@ interface Conversation {
   id: string;
   title: string;
   messages: Message[];
+  ragIndexName?: string;
+  ragFilename?: string;
 }
 
 export default function Chat() {
@@ -43,7 +46,9 @@ export default function Chat() {
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState<Record<string, "sent" | "error">>({});
+  const [uploading, setUploading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentConv = conversations.find((c) => c.id === currentConvId);
   const messages = currentConv?.messages || [];
@@ -91,33 +96,64 @@ export default function Chat() {
     setWarnings([]);
 
     try {
-      const { settings: sanitizedSettings, warnings: clientWarnings } =
-        sanitizeGenerationSettings(settings);
+      const activeIndexName = currentConv?.ragIndexName;
+      let assistantMessage: Message;
+      let responseWarnings: string[] = [];
 
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: [...messages, userMessage],
-          model,
-          settings: sanitizedSettings,
-        }),
-      });
+      if (activeIndexName) {
+        const response = await fetch("/api/rag/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question: userMessage.content,
+            indexName: activeIndexName,
+          }),
+        });
 
-      const data = await response.json().catch(() => null);
+        const data = await response.json().catch(() => null);
 
-      if (!response.ok) {
-        throw new Error(
-          data?.error || "Failed to generate response. Please try again."
-        );
+        if (!response.ok) {
+          throw new Error(
+            data?.error || "Failed to answer from the uploaded document."
+          );
+        }
+
+        assistantMessage = {
+          id: generateId(),
+          role: "assistant",
+          content: data.text,
+          sources: data.sources,
+        };
+      } else {
+        const { settings: sanitizedSettings, warnings: clientWarnings } =
+          sanitizeGenerationSettings(settings);
+
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [...messages, userMessage],
+            model,
+            settings: sanitizedSettings,
+          }),
+        });
+
+        const data = await response.json().catch(() => null);
+
+        if (!response.ok) {
+          throw new Error(
+            data?.error || "Failed to generate response. Please try again."
+          );
+        }
+        assistantMessage = {
+          id: generateId(),
+          role: "assistant",
+          content: data.text,
+        };
+        responseWarnings = [...clientWarnings, ...(data.warnings || [])];
       }
-      const assistantMessage: Message = {
-        id: generateId(),
-        role: "assistant",
-        content: data.text,
-      };
 
-      setWarnings([...clientWarnings, ...(data.warnings || [])]);
+      setWarnings(responseWarnings);
 
       setConversations((prev) =>
         prev.map((c) =>
@@ -163,6 +199,86 @@ export default function Chat() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || uploading) return;
+
+    if (!currentConvId) {
+      startNewChat();
+    }
+    const convId = currentConvId || Date.now().toString();
+
+    setUploading(true);
+    setWarnings([]);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/rag/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to upload and ingest the PDF.");
+      }
+
+      const infoMessage: Message = {
+        id: generateId(),
+        role: "assistant",
+        content: `"${data.filename}" ingested successfully (${data.pageCount} pages). Ask me anything about it.`,
+      };
+
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === convId
+            ? {
+                ...c,
+                ragIndexName: data.indexName,
+                ragFilename: data.filename,
+                messages: [...c.messages, infoMessage],
+              }
+            : c
+        )
+      );
+    } catch (error) {
+      console.warn("PDF upload failed:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to upload and ingest the PDF.";
+      const errorMessage: Message = {
+        id: generateId(),
+        role: "assistant",
+        content: message,
+      };
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === convId
+            ? { ...c, messages: [...c.messages, errorMessage] }
+            : c
+        )
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const clearRagDocument = () => {
+    if (!currentConvId) return;
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === currentConvId
+          ? { ...c, ragIndexName: undefined, ragFilename: undefined }
+          : c
+      )
+    );
   };
 
   const handleCopy = async (msg: Message) => {
@@ -375,6 +491,18 @@ export default function Chat() {
                     {msg.content}
                   </p>
 
+                  {msg.role === "assistant" &&
+                    msg.sources &&
+                    msg.sources.some((s) => s.pageNumber !== null && s.pageNumber !== undefined) && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Sources:{" "}
+                        {msg.sources
+                          .filter((s) => s.pageNumber !== null && s.pageNumber !== undefined)
+                          .map((s) => `p. ${s.pageNumber}`)
+                          .join(", ")}
+                      </p>
+                    )}
+
                   {msg.role === "assistant" && (
                     <div className="mt-2 flex items-center gap-1">
                       <button
@@ -497,6 +625,23 @@ export default function Chat() {
         {/* Input */}
         <div className="bg-white bg-opacity-80 backdrop-blur-sm border-t border-gray-200 py-4">
           <div className="max-w-4xl mx-auto px-4">
+            {currentConv?.ragIndexName && (
+              <div className="mb-3 flex w-fit items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs text-blue-700">
+                <FileText size={12} />
+                <span>
+                  Asking about <strong>{currentConv.ragFilename}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={clearRagDocument}
+                  className="text-blue-500 hover:text-blue-700"
+                  aria-label="Stop asking about this document"
+                  title="Stop asking about this document"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
             {warnings.length > 0 && (
               <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
@@ -509,16 +654,43 @@ export default function Chat() {
             )}
             <form onSubmit={handleSubmit} className="flex gap-3">
               <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                title="Upload a PDF to ask questions about it"
+                aria-label="Upload PDF"
+                className="p-3 rounded-full border border-gray-300 hover:bg-gray-50 text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {uploading ? (
+                  <Loader2 size={18} className="animate-spin" />
+                ) : (
+                  <Paperclip size={18} />
+                )}
+              </button>
+              <input
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Message Gemini"
-                disabled={loading}
+                placeholder={
+                  uploading
+                    ? "Ingesting PDF..."
+                    : currentConv?.ragIndexName
+                    ? `Ask about ${currentConv.ragFilename}`
+                    : "Message Gemini"
+                }
+                disabled={loading || uploading}
                 className="flex-1 px-4 py-3 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500 disabled:bg-gray-50 disabled:cursor-not-allowed transition-all bg-white text-gray-900"
               />
               <button
                 type="submit"
-                disabled={loading || !input.trim()}
+                disabled={loading || uploading || !input.trim()}
                 className="px-6 py-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
               >
                 Send
