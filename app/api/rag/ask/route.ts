@@ -7,6 +7,7 @@ const RAG_BACKEND_URL = process.env.RAG_BACKEND_URL || "http://localhost:8000";
 interface RagSource {
   page_number: number | null;
   source: string | null;
+  text?: string | null;
 }
 
 export async function POST(request: NextRequest) {
@@ -37,9 +38,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       text: data.answer,
+      context: data.context ?? undefined,
       sources: (data.sources || []).map((s: RagSource) => ({
         pageNumber: s.page_number,
         source: s.source,
+        text: s.text ?? undefined,
       })),
     });
   } catch (error) {

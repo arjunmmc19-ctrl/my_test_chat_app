@@ -10,12 +10,22 @@ import {
   sanitizeGenerationSettings,
 } from "../lib/generationSettings";
 
+interface Evaluation {
+  status: "loading" | "done" | "error";
+  verdict?: "correct" | "incorrect";
+  reasoning?: string;
+  judgeModel?: string;
+  error?: string;
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   reaction?: "up" | "down";
-  sources?: { pageNumber: number | null; source: string | null }[];
+  sources?: { pageNumber: number | null; source: string | null; text?: string | null }[];
+  context?: string;
+  evaluation?: Evaluation;
 }
 
 const generateId = () =>
@@ -123,6 +133,7 @@ export default function Chat() {
           role: "assistant",
           content: data.text,
           sources: data.sources,
+          context: data.context ?? undefined,
         };
       } else {
         const { settings: sanitizedSettings, warnings: clientWarnings } =
@@ -350,6 +361,62 @@ export default function Chat() {
     }
   };
 
+  const updateMessage = (convId: string, messageId: string, patch: Partial<Message>) => {
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === convId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => (m.id === messageId ? { ...m, ...patch } : m)),
+            }
+          : c
+      )
+    );
+  };
+
+  const handleEvaluate = async (msg: Message, questionText: string) => {
+    if (!currentConvId || !questionText.trim()) return;
+
+    updateMessage(currentConvId, msg.id, { evaluation: { status: "loading" } });
+
+    try {
+      const response = await fetch("/api/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: questionText,
+          answer: msg.content,
+          context: msg.context,
+          answerModel: currentConv?.ragIndexName ? undefined : model,
+        }),
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to evaluate this response.");
+      }
+
+      updateMessage(currentConvId, msg.id, {
+        evaluation: {
+          status: "done",
+          verdict: data.verdict,
+          reasoning: data.reasoning,
+          judgeModel: data.judgeModel,
+        },
+      });
+    } catch (error) {
+      console.warn("Evaluate request failed:", error);
+      updateMessage(currentConvId, msg.id, {
+        evaluation: {
+          status: "error",
+          error:
+            error instanceof Error ? error.message : "Failed to evaluate this response.",
+        },
+      });
+    }
+  };
+
   const suggestedPrompts = [
     "Explain quantum computing",
     "Write a Python function",
@@ -468,7 +535,7 @@ export default function Chat() {
               </div>
             )}
 
-            {messages.map((msg) => (
+            {messages.map((msg, idx) => (
               <div
                 key={msg.id}
                 className={`flex gap-4 py-6 animate-in fade-in ${
@@ -555,6 +622,18 @@ export default function Chat() {
                       >
                         Feedback
                       </button>
+                      <button
+                        onClick={() =>
+                          handleEvaluate(msg, idx > 0 ? messages[idx - 1].content : "")
+                        }
+                        disabled={idx === 0 || msg.evaluation?.status === "loading"}
+                        className="px-2 py-1 rounded-md hover:bg-gray-100 text-xs font-medium text-gray-500 hover:text-gray-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                        title="Evaluate this response with a different LLM judge"
+                      >
+                        {msg.evaluation?.status === "loading"
+                          ? "Evaluating..."
+                          : "Evaluate this chat"}
+                      </button>
                       {copiedId === msg.id && (
                         <span className="text-xs text-green-600">Copied</span>
                       )}
@@ -563,6 +642,48 @@ export default function Chat() {
                       )}
                     </div>
                   )}
+
+                  {msg.role === "assistant" &&
+                    msg.evaluation &&
+                    msg.evaluation.status !== "loading" && (
+                      <div
+                        className={`mt-2 w-full text-left rounded-lg border p-3 text-xs ${
+                          msg.evaluation.status === "error"
+                            ? "border-red-200 bg-red-50"
+                            : msg.evaluation.verdict === "correct"
+                            ? "border-green-200 bg-green-50"
+                            : "border-amber-200 bg-amber-50"
+                        }`}
+                      >
+                        {msg.evaluation.status === "error" ? (
+                          <p className="text-red-700">{msg.evaluation.error}</p>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 font-semibold text-white ${
+                                  msg.evaluation.verdict === "correct"
+                                    ? "bg-green-600"
+                                    : "bg-amber-600"
+                                }`}
+                              >
+                                {msg.evaluation.verdict === "correct" ? "Correct" : "Incorrect"}
+                              </span>
+                              <span className="text-gray-500">
+                                Judged by {msg.evaluation.judgeModel}
+                              </span>
+                            </div>
+                            <p className="mt-1.5 text-gray-700">{msg.evaluation.reasoning}</p>
+                            {!msg.context && (
+                              <p className="mt-1.5 text-gray-400 italic">
+                                No retrieved context was available for this answer — judged on
+                                plausibility only.
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
 
                   {msg.role === "assistant" && feedbackOpenId === msg.id && (
                     <div className="mt-2 w-full text-left rounded-lg border border-gray-200 bg-gray-50 p-3">

@@ -34,6 +34,12 @@ flowchart LR
   RU --> C
   RA --> C
 
+  C -->|"POST /api/evaluate<br/>{ question, answer, context }"| EV[app/api/evaluate/route.ts]
+  EV -->|reads| E
+  EV -->|SDK call, different model| G
+  EV -->|appends row| EVC[(evaluations.csv)]
+  EV --> C
+
   L -->|loads global styles + fonts| S[app/globals.css]
 ```
 
@@ -55,20 +61,29 @@ flowchart LR
 6. FastAPI retrieves relevant pages from that document's Pinecone index, runs the LangChain/OpenAI RAG chain, and returns the answer plus source page numbers, which the client renders under the reply.
 7. The "Asking about `<file>`" badge above the input lets the user clear the active document and return to plain Gemini chat.
 
+**LLM-as-judge evaluation (new):**
+1. "Evaluate this chat" under an assistant reply sends `{ question, answer, context, answerModel }` to `app/api/evaluate/route.ts` — `context` is the exact retrieved-chunk text returned by `/api/rag/ask` for that reply (now sourced from a single retrieval pass in `rag_core.ask`, reused for both generation and the response, so the judge sees precisely what the generator saw); plain Gemini replies have no context, since there's no retrieval step.
+2. The route picks a judge model distinct from `answerModel` (`app/lib/judge.ts`), builds a judge prompt with `@google/genai` using the existing `GOOGLE_GENAI_API_KEY`, and asks for a one-line `correct`/`incorrect` verdict plus a short reasoning sentence.
+3. The verdict, reasoning, and judge model are returned to the client and rendered in a panel under the reply; the same row (timestamp, question, answer, context, verdict, reasoning, judge model) is appended to `evaluations.csv` at the project root (gitignored, like `feedback.csv`).
+4. For RAG replies this checks faithfulness to the retrieved context; for plain Gemini replies (no context) it's a plausibility-only check, and the UI says so.
+
 ## Key Boundaries
 
 - `app/page.tsx` is a server component by default.
 - `app/components/Chat.tsx` is a client component because it uses `useState`, `useRef`, and `useEffect`.
 - `app/api/chat/route.ts` is server-only and keeps `GOOGLE_GENAI_API_KEY` out of the browser bundle.
 - `app/api/rag/upload/route.ts` and `app/api/rag/ask/route.ts` are server-only proxies to the FastAPI backend — the browser never talks to it directly, so no CORS configuration is needed on that side and `RAG_BACKEND_URL` never reaches the client.
+- `app/api/evaluate/route.ts` is server-only and reuses `GOOGLE_GENAI_API_KEY` — no new secret is introduced for the judge.
 - `app/layout.tsx` applies the shared document shell, fonts, and metadata.
 
 ## Main Files
 
 - `app/page.tsx` - entry point for `/`
 - `app/layout.tsx` - root HTML shell and metadata
-- `app/components/Chat.tsx` - interactive chat UI, including PDF upload and RAG routing
+- `app/components/Chat.tsx` - interactive chat UI, including PDF upload, RAG routing, and the evaluate action
 - `app/api/chat/route.ts` - Gemini API bridge
 - `app/api/rag/upload/route.ts` - proxies PDF uploads to the FastAPI backend's `/upload`
 - `app/api/rag/ask/route.ts` - proxies questions to the FastAPI backend's `/ask`
+- `app/api/evaluate/route.ts` - LLM-as-judge: scores an answer against its retrieved context (or plausibility alone) and logs to `evaluations.csv`
+- `app/lib/judge.ts` - judge model selection, prompt building, and verdict parsing
 - `app/globals.css` - global styling and theme tokens

@@ -37,6 +37,9 @@ yarn-error.log*
 # local feedback data
 feedback.csv
 
+# local LLM-as-judge evaluation data
+evaluations.csv
+
 # vercel
 .vercel
 
