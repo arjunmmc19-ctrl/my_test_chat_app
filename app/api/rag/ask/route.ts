@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { DEFAULT_VECTOR_DB, isSupportedVectorDb } from "@/app/lib/vectorDbs";
 
 export const runtime = "nodejs";
 
@@ -12,7 +13,7 @@ interface RagSource {
 
 export async function POST(request: NextRequest) {
   try {
-    const { question, indexName } = await request.json();
+    const { question, indexName, provider } = await request.json();
 
     if (typeof question !== "string" || !question.trim()) {
       return NextResponse.json({ error: "Question is required" }, { status: 400 });
@@ -21,10 +22,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "indexName is required" }, { status: 400 });
     }
 
+    const selectedProvider = isSupportedVectorDb(provider) ? provider : DEFAULT_VECTOR_DB;
+
     const response = await fetch(`${RAG_BACKEND_URL}/ask`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, index_name: indexName }),
+      body: JSON.stringify({ question, index_name: indexName, provider: selectedProvider }),
     });
 
     const data = await response.json().catch(() => null);

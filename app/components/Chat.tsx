@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Menu, Plus, MessageCircle, Settings, HelpCircle, ChevronDown, X, RotateCcw, AlertTriangle, Info, Copy, Check, ThumbsUp, ThumbsDown, Paperclip, FileText, Loader2 } from "lucide-react";
 import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../lib/models";
+import { VECTOR_DBS, DEFAULT_VECTOR_DB, VectorDbId } from "../lib/vectorDbs";
 import {
   GenerationSettings,
   DEFAULT_GENERATION_SETTINGS,
@@ -37,8 +38,10 @@ interface Conversation {
   id: string;
   title: string;
   messages: Message[];
+  mode: "chat" | "document";
   ragIndexName?: string;
   ragFilename?: string;
+  ragProvider?: VectorDbId;
 }
 
 export default function Chat() {
@@ -57,6 +60,7 @@ export default function Chat() {
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState<Record<string, "sent" | "error">>({});
   const [uploading, setUploading] = useState(false);
+  const [vectorDb, setVectorDb] = useState<VectorDbId>(DEFAULT_VECTOR_DB);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -76,10 +80,20 @@ export default function Chat() {
     setFeedbackText("");
   }, [currentConvId]);
 
-  const startNewChat = () => {
+  const startNewChat = (mode: "chat" | "document" = "chat") => {
     const newId = Date.now().toString();
-    setConversations((prev) => [...prev, { id: newId, title: "New chat", messages: [] }]);
+    setConversations((prev) => [...prev, { id: newId, title: "New chat", messages: [], mode }]);
     setCurrentConvId(newId);
+  };
+
+  const setConversationMode = (mode: "chat" | "document") => {
+    if (!currentConvId) {
+      startNewChat(mode);
+      return;
+    }
+    setConversations((prev) =>
+      prev.map((c) => (c.id === currentConvId ? { ...c, mode } : c))
+    );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -106,7 +120,9 @@ export default function Chat() {
     setWarnings([]);
 
     try {
-      const activeIndexName = currentConv?.ragIndexName;
+      const activeIndexName =
+        currentConv?.mode === "document" ? currentConv?.ragIndexName : undefined;
+      const activeProvider = currentConv?.ragProvider;
       let assistantMessage: Message;
       let responseWarnings: string[] = [];
 
@@ -117,6 +133,7 @@ export default function Chat() {
           body: JSON.stringify({
             question: userMessage.content,
             indexName: activeIndexName,
+            provider: activeProvider,
           }),
         });
 
@@ -218,7 +235,7 @@ export default function Chat() {
     if (!file || uploading) return;
 
     if (!currentConvId) {
-      startNewChat();
+      startNewChat("document");
     }
     const convId = currentConvId || Date.now().toString();
 
@@ -228,6 +245,7 @@ export default function Chat() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("provider", vectorDb);
 
       const response = await fetch("/api/rag/upload", {
         method: "POST",
@@ -240,10 +258,12 @@ export default function Chat() {
         throw new Error(data?.error || "Failed to upload and ingest the PDF.");
       }
 
+      const providerLabel =
+        VECTOR_DBS.find((db) => db.id === data.provider)?.label ?? "the vector database";
       const infoMessage: Message = {
         id: generateId(),
         role: "assistant",
-        content: `"${data.filename}" ingested successfully (${data.pageCount} pages). Ask me anything about it.`,
+        content: `"${data.filename}" ingested into ${providerLabel} successfully (${data.pageCount} pages). Ask me anything about it.`,
       };
 
       setConversations((prev) =>
@@ -251,8 +271,10 @@ export default function Chat() {
           c.id === convId
             ? {
                 ...c,
+                mode: "document",
                 ragIndexName: data.indexName,
                 ragFilename: data.filename,
+                ragProvider: (data.provider as VectorDbId) ?? vectorDb,
                 messages: [...c.messages, infoMessage],
               }
             : c
@@ -286,7 +308,7 @@ export default function Chat() {
     setConversations((prev) =>
       prev.map((c) =>
         c.id === currentConvId
-          ? { ...c, ragIndexName: undefined, ragFilename: undefined }
+          ? { ...c, ragIndexName: undefined, ragFilename: undefined, ragProvider: undefined }
           : c
       )
     );
@@ -387,7 +409,10 @@ export default function Chat() {
           question: questionText,
           answer: msg.content,
           context: msg.context,
-          answerModel: currentConv?.ragIndexName ? undefined : model,
+          // Keyed off this message's own context, not the conversation's
+          // current mode/document — those can change after this message
+          // was generated, but whether *this* answer was RAG-sourced can't.
+          answerModel: msg.context !== undefined ? undefined : model,
         }),
       });
 
@@ -434,7 +459,7 @@ export default function Chat() {
       >
         <div className="p-4 border-b border-gray-200">
           <button
-            onClick={startNewChat}
+            onClick={() => startNewChat()}
             className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 transition-colors font-medium"
           >
             <Plus size={18} />
@@ -491,27 +516,105 @@ export default function Chat() {
                 <Menu size={20} className="text-gray-700" />
               </button>
               <h1 className="text-2xl font-semibold text-gray-900">My Gemini App</h1>
-              <div className="relative">
-                <select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  aria-label="Select Gemini model"
-                  className="appearance-none pl-3 pr-8 py-1.5 rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors cursor-pointer"
+
+              <div className="flex items-center gap-1 rounded-full border border-gray-200 bg-gray-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => setConversationMode("chat")}
+                  className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                    (currentConv?.mode ?? "chat") === "chat"
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-600 hover:text-gray-900"
+                  }`}
                 >
-                  {GEMINI_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown
-                  size={14}
-                  className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500"
-                />
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConversationMode("document")}
+                  className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                    currentConv?.mode === "document"
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-600 hover:text-gray-900"
+                  }`}
+                >
+                  Document Q&A
+                </button>
               </div>
+
+              {(currentConv?.mode ?? "chat") === "chat" ? (
+                <div className="relative">
+                  <select
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    aria-label="Select Gemini model"
+                    className="appearance-none pl-3 pr-8 py-1.5 rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors cursor-pointer"
+                  >
+                    {GEMINI_MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    size={14}
+                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="relative">
+                    <select
+                      value={currentConv?.ragIndexName ? currentConv.ragProvider ?? vectorDb : vectorDb}
+                      onChange={(e) => setVectorDb(e.target.value as VectorDbId)}
+                      disabled={Boolean(currentConv?.ragIndexName)}
+                      aria-label="Select vector database"
+                      title={
+                        currentConv?.ragIndexName
+                          ? "Clear the current document to switch vector databases"
+                          : "Select the vector database for the next upload"
+                      }
+                      className="appearance-none pl-3 pr-8 py-1.5 rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {VECTOR_DBS.map((db) => (
+                        <option key={db.id} value={db.id}>
+                          {db.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading}
+                    title="Upload a PDF to ask questions about it"
+                    aria-label="Upload PDF"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {uploading ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Paperclip size={16} />
+                    )}
+                    {uploading ? "Ingesting..." : "Upload PDF"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/pdf"
+          onChange={handleFileSelect}
+          className="hidden"
+        />
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto">
@@ -746,11 +849,14 @@ export default function Chat() {
         {/* Input */}
         <div className="bg-white bg-opacity-80 backdrop-blur-sm border-t border-gray-200 py-4">
           <div className="max-w-4xl mx-auto px-4">
-            {currentConv?.ragIndexName && (
+            {currentConv?.mode === "document" && currentConv?.ragIndexName && (
               <div className="mb-3 flex w-fit items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs text-blue-700">
                 <FileText size={12} />
                 <span>
-                  Asking about <strong>{currentConv.ragFilename}</strong>
+                  Asking about <strong>{currentConv.ragFilename}</strong> (
+                  {VECTOR_DBS.find((db) => db.id === currentConv.ragProvider)?.label ??
+                    currentConv.ragProvider}
+                  )
                 </span>
                 <button
                   type="button"
@@ -775,35 +881,16 @@ export default function Chat() {
             )}
             <form onSubmit={handleSubmit} className="flex gap-3">
               <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/pdf"
-                onChange={handleFileSelect}
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                title="Upload a PDF to ask questions about it"
-                aria-label="Upload PDF"
-                className="p-3 rounded-full border border-gray-300 hover:bg-gray-50 text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {uploading ? (
-                  <Loader2 size={18} className="animate-spin" />
-                ) : (
-                  <Paperclip size={18} />
-                )}
-              </button>
-              <input
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder={
                   uploading
                     ? "Ingesting PDF..."
-                    : currentConv?.ragIndexName
+                    : currentConv?.mode === "document" && currentConv?.ragIndexName
                     ? `Ask about ${currentConv.ragFilename}`
+                    : currentConv?.mode === "document"
+                    ? "Upload a PDF above to ask questions about it"
                     : "Message Gemini"
                 }
                 disabled={loading || uploading}

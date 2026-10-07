@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { DEFAULT_VECTOR_DB, isSupportedVectorDb } from "@/app/lib/vectorDbs";
 
 export const runtime = "nodejs";
 
@@ -8,13 +9,17 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get("file");
+    const provider = formData.get("provider");
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
+    const selectedProvider = isSupportedVectorDb(provider) ? provider : DEFAULT_VECTOR_DB;
+
     const upstreamForm = new FormData();
     upstreamForm.append("file", file, file.name);
+    upstreamForm.append("provider", selectedProvider);
 
     const response = await fetch(`${RAG_BACKEND_URL}/upload`, {
       method: "POST",
@@ -34,6 +39,7 @@ export async function POST(request: NextRequest) {
       indexName: data.index_name,
       filename: data.filename,
       pageCount: data.page_count,
+      provider: data.provider ?? selectedProvider,
     });
   } catch (error) {
     console.error("RAG upload proxy error:", error);
